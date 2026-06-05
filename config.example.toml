@@ -1,0 +1,23 @@
+# ask-gemini-mcp configuration. Copy to ~/.config/ask-gemini-mcp/config.toml
+# and fill in [gcp].project. Environment variables override these values:
+#   ASK_GEMINI_PROJECT > GOOGLE_CLOUD_PROJECT > [gcp].project
+#   ASK_GEMINI_LOCATION > GOOGLE_CLOUD_LOCATION > [gcp].location
+#   ASK_GEMINI_MODEL > [model].name
+#   ASK_GEMINI_REQUEST_TIMEOUT > [model].request_timeout
+
+[gcp]
+# Required. Your Google Cloud project ID with Vertex AI API enabled.
+# Set via env var rather than committing this file with a real ID.
+project = ""
+
+# Optional. Vertex AI region. Default: us-central1.
+location = "us-central1"
+
+[model]
+# Optional. Gemini model name. Default: gemini-2.5-flash.
+# After the Gemini 3 GA migration (2026-10-16+), update to gemini-3-* here.
+name = "gemini-2.5-flash"
+
+# Optional. Per-request timeout in seconds applied to each Gemini call.
+# Default: 180.
+request_timeout = 180
