@@ -44,3 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RFP `Configuration` section corrected: config path is per-tool
   `~/.config/ask-gemini-mcp/config.toml`, matching the existing gem-*
   convention (schema-level unification only, not path).
+- Release pipeline: `scripts/codesign-darwin.sh` (Developer ID +
+  Hardened Runtime + Apple timestamp) and `scripts/notarize-darwin.sh`
+  (xcrun notarytool via NOTARY_PROFILE) wired into `make build` /
+  `make build-all` / `make package`. Both degrade gracefully when
+  the local keychain lacks the identity / profile.

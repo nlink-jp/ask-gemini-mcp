@@ -22,11 +22,19 @@ shell access, where `gem-*` CLI tools cannot be used directly.
 ## Build & test
 
 ```sh
-make build      # → dist/ask-gemini-mcp
+make build      # → dist/ask-gemini-mcp (auto-codesigns on darwin if a
+                # Developer ID Application identity is in the keychain)
 make test       # go test ./...
-make build-all  # cross-compile 5 platforms
+make build-all  # cross-compile 5 platforms; darwin builds get codesigned
 make test-e2e   # build + spawn binary + drive over stdio (needs Vertex AI auth)
+make package    # build-all + zip with version suffix + notarize darwin zips
+                # via NOTARY_PROFILE (default: nlink-jp-notary)
 ```
+
+Both signing and notarization degrade gracefully: missing keychain
+identity / notary profile produce un-signed / un-notarized binaries
+with a one-line warning. Contributors without an Apple Developer
+Program account can still build.
 
 ## Configuration
 
