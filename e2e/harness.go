@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,8 +50,11 @@ func StartWithEnv(t *testing.T, extraEnv map[string]string, args ...string) *Har
 	if binary == "" {
 		t.Skip("ASK_GEMINI_TEST_BINARY not set; run via `make test-e2e`")
 	}
-	if os.Getenv("ASK_GEMINI_PROJECT") == "" && os.Getenv("GOOGLE_CLOUD_PROJECT") == "" {
-		t.Skip("ASK_GEMINI_PROJECT (or GOOGLE_CLOUD_PROJECT) not set; cannot reach Vertex AI")
+	// Skip only when neither env nor config file can provide a project
+	// ID — running the binary in that case would error out at startup
+	// and the test failure would obscure the real cause.
+	if !hasProjectConfigured() {
+		t.Skip("no GCP project configured: set ASK_GEMINI_PROJECT, GOOGLE_CLOUD_PROJECT, or create ~/.config/ask-gemini-mcp/config.toml")
 	}
 
 	cmd := exec.Command(binary, args...)
@@ -91,6 +95,20 @@ func StartWithEnv(t *testing.T, extraEnv map[string]string, args ...string) *Har
 	h := &Harness{t: t, cmd: cmd, stdin: stdin, lines: lines}
 	t.Cleanup(h.Close)
 	return h
+}
+
+// hasProjectConfigured reports whether the binary will be able to
+// resolve a project at startup (either env or config file).
+func hasProjectConfigured() bool {
+	if os.Getenv("ASK_GEMINI_PROJECT") != "" || os.Getenv("GOOGLE_CLOUD_PROJECT") != "" {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".config", "ask-gemini-mcp", "config.toml"))
+	return err == nil
 }
 
 // Close gracefully shuts the server down by closing stdin and waiting.
