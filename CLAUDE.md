@@ -25,7 +25,7 @@ shell access, where `gem-*` CLI tools cannot be used directly.
 make build      # → dist/ask-gemini-mcp (auto-codesigns on darwin if a
                 # Developer ID Application identity is in the keychain)
 make test       # go test ./...
-make build-all  # cross-compile 5 platforms; darwin builds get codesigned
+make build-all  # cross-compile 4 platforms (darwin arm64 only); darwin gets codesigned
 make test-e2e   # build + spawn binary + drive over stdio (needs Vertex AI auth)
 make package    # build-all + zip with version suffix + notarize darwin zips
                 # via NOTARY_PROFILE (default: nlink-jp-notary)

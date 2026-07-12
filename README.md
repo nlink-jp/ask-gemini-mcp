@@ -69,7 +69,7 @@ Settings load order: built-in defaults → TOML file → env vars.
 ```sh
 make build      # → dist/ask-gemini-mcp
 make test       # go test ./...
-make build-all  # cross-compile 5 platforms
+make build-all  # cross-compile 4 platforms (darwin arm64 only; no Intel)
 ```
 
 ## License
