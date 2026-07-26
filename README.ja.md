@@ -11,14 +11,14 @@
 
 ## ステータス
 
-リリース前。`_wip/` 配下に scaffold 済み。MCP サーバー本体は後続コミット
-で配線します。設計 RFP は [`docs/ja/ask-gemini-mcp-rfp.ja.md`](docs/ja/ask-gemini-mcp-rfp.ja.md)
-を参照。
+リリース済み。MCP サーバーは稼働中で、単一ツール `ask_gemini` を公開して
+います。現行バージョンは [CHANGELOG.md](CHANGELOG.md)、設計 RFP は
+[`docs/ja/ask-gemini-mcp-rfp.ja.md`](docs/ja/ask-gemini-mcp-rfp.ja.md) を参照。
 
 ## クイックスタート
 
 ```sh
-# 初回リリース後にインストール
+# インストール
 go install github.com/nlink-jp/ask-gemini-mcp@latest
 
 # Vertex AI 認証 (Application Default Credentials)

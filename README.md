@@ -13,14 +13,15 @@ invoked directly.
 
 ## Status
 
-Pre-release. Scaffolded under `_wip/`; the MCP server is wired in
-subsequent commits. See [`docs/en/ask-gemini-mcp-rfp.md`](docs/en/ask-gemini-mcp-rfp.md)
-for the design RFP.
+Released. The MCP server is live and exposes a single tool, `ask_gemini`.
+See [CHANGELOG.md](CHANGELOG.md) for the current version and
+[`docs/en/ask-gemini-mcp-rfp.md`](docs/en/ask-gemini-mcp-rfp.md) for the
+design RFP.
 
 ## Quick start
 
 ```sh
-# Install (after first release)
+# Install
 go install github.com/nlink-jp/ask-gemini-mcp@latest
 
 # Authenticate Vertex AI via Application Default Credentials.
