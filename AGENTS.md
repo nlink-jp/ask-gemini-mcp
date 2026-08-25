@@ -10,6 +10,7 @@ Vertex AI Gemini. Single-tool, stateless. Go, single binary.
 ```sh
 make build        # → dist/ask-gemini-mcp
 make build-all    # 5 platforms
+make verify-release  # gate: .notarized marker + freshness (run before upload)
 ```
 
 `make build` MUST be used — never `go build` (drops binary in project root).
