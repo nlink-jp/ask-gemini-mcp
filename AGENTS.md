@@ -61,3 +61,19 @@ ask-gemini-mcp/
 - **Retryable errors only**: `isRetryable()` matches well-known transient
   failure substrings (429 / 5xx / connection / timeout). Auth and schema
   errors return immediately so the user sees the real cause.
+- **Every tool schema is closed** (`additionalProperties: false`, organization
+  ADR-021 §10), and both halves of the contract are real: the schema stops a
+  mistyped argument at a validating client, the handler's
+  `DisallowUnknownFields` stops it at the server. `ask_gemini` already set the
+  key; `TestEveryToolSchemaIsClosed` is what keeps it set and what covers the
+  next tool.
+- **`tools.Registry` is the single registration list.** `cmd` registers from
+  it and the arch test walks it, so a tool added there is registered and
+  asserted over without touching either caller. Do not go back to naming a
+  tool constructor directly in `cmd` — a second list is a list that drifts,
+  and the arch test would then be asserting over a set the server does not
+  serve.
+- **No `make check` / `make lint` target** — only `make test`. Nothing in this
+  repo gates formatting, so `gofmt` drift accumulates unnoticed (one such
+  file was found in `internal/transport` on 2026-09-21 and left alone as
+  unrelated). Run `go vet ./...` and `gofmt -l .` by hand before a release.
