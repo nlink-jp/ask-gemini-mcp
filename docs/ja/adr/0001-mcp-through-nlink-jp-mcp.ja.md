@@ -32,9 +32,9 @@ ADR-0001 にある。Claude Code 2.1.311・gem-agent・lagent は、どれも両
 2. **transport（方針 §2）**: `transport.NewStdioTransport(in, out)` は、入出力の入れ物として残す（`In`・`Out`）。
    1 MiB の `bufio.Scanner` と、読み書きの処理と、その試験は消す。`internal/jsonrpc` は、プロトコル層だけが
    使っていたので消す。
-3. **選択肢（方針 §4）**: `Workers` は 1（呼び出しは 1 つずつ処理していた）、`QueueDepth` は 256。ログは、`cmd` が
+3. **選択肢（方針 §2）**: `Workers` は 1（呼び出しは 1 つずつ処理していた）、`QueueDepth` は 256。ログは、`cmd` が
    stderr に作る slog をそのまま渡す。ロガーがなければ、`New` は Warn 以上を stderr に出す。
-4. **変わる振る舞い（方針 §3）**:
+4. **変わる振る舞い（方針 §4）**:
    - 未知のツールは -32601 から -32602 になる。`ping` には -32601 ではなく `{}` を返す。
    - initialize の前の `tools/*` は -32602 になる。オブジェクトでない `arguments` も -32602 になる。
    - `"id":null` の要求は -32600 になる（これまでは通知として黙っていた）。
@@ -66,12 +66,14 @@ ADR-0001 にある。Claude Code 2.1.311・gem-agent・lagent は、どれも両
 - 新方式専用のクライアントからもつながる。旧方式のクライアントには、これまでどおり答える。
 - 試験はモジュールの `client` で動かす（`internal/mcpserver`・`cmd`）。探りのクライアント 3 種の組み合わせを足した。
   Go の e2e（`e2e/`・`make test-e2e`）は、握手を自分で書く代わりに、モジュールのクライアントでバイナリを開く。
+  そのため、挙げられていた ADR-030 §6 の除外は要らなくなった（求め——issue nlink-jp/.github#2——から外す）。
 
 ## Alternatives considered
 
 | 案 | 採らない理由 |
 |---|---|
 | `mcpserver` を消し、ツールを直接モジュールに登録する | ツールと試験の登録の形が変わる。薄い層を残せば、ツールは変わらない |
+| ask-gemini-mcp の `cmd` に足した `newAsker` の差し替え口を、ask-llm-mcp にも設ける | ask-gemini に要るのは、Gemini の SDK がクライアントを作るときに資格情報を探すためで、配線の試験は資格情報なしで動かねばならない。ask-llm の `openai.New` は何も呼ばないので、双子はここでわざと違う |
 | `ToolHandler` を data-toolbox-mcp と同じく `any` を返す形にする | 得るものが無いのにツールが変わる。文を block にするのは層が受け持つ |
 
 ## References

@@ -33,9 +33,9 @@ repository:
 2. **Transport (policy §2)**: `transport.NewStdioTransport(in, out)` stays as the holder of the two streams (`In`,
    `Out`); its 1 MiB `bufio.Scanner`, read/write code and its tests go. `internal/jsonrpc`, used only by the protocol
    layer, goes.
-3. **Options (policy §4)**: `Workers` 1 (calls were served one at a time), `QueueDepth` 256; the logger is the one
+3. **Options (policy §2)**: `Workers` 1 (calls were served one at a time), `QueueDepth` 256; the logger is the one
    `cmd` builds on stderr (without one, `New` logs Warn and above to stderr).
-4. **Behaviour that changes (policy §3)**:
+4. **Behaviour that changes (policy §4)**:
    - An unknown tool is -32602 instead of -32601; `ping` gets `{}` instead of -32601.
    - `tools/*` before initialize is -32602, and so are `arguments` that is not an object.
    - A request with `"id":null` gets -32600 (it was silent, as a notification).
@@ -67,13 +67,15 @@ repository:
 - Modern-only clients reach it too; legacy clients are answered as before.
 - Tests run through the module's `client` (`internal/mcpserver`, `cmd`); a test against the three probe clients was
   added. The Go e2e (`e2e/`, `make test-e2e`) opens the binary with the module's client instead of writing the
-  handshake itself.
+  handshake itself, so it no longer needs the ADR-030 §6 exemption it was listed for (to be dropped from the
+  request, issue nlink-jp/.github#2).
 
 ## Alternatives considered
 
 | Alternative | Why not |
 |---|---|
 | Drop `mcpserver` and register the tool on the module directly | The tool's and tests' registration would change; the thin layer leaves the tool unchanged |
+| Give ask-llm-mcp the same `newAsker` seam ask-gemini-mcp's `cmd` gained | ask-gemini needs it because the Gemini SDK resolves credentials when the client is made, and a wiring test must need none; ask-llm's `openai.New` makes no call, so the twins differ here on purpose |
 | Let `ToolHandler` return `any`, as data-toolbox-mcp's does | A change to the tool for no gain; the layer turns the text into a block itself |
 
 ## References

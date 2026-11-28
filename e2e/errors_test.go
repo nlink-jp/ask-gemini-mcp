@@ -43,7 +43,7 @@ func TestErrors_EmptyPromptReturnsStructuredInvalidArguments(t *testing.T) {
 }
 
 // TestErrors_UnknownToolReturnsRPCError exercises tools/call with an
-// unregistered name to confirm the server's method-not-found path
+// unregistered name to confirm the protocol layer's -32602 (unknown tool)
 // reaches the wire correctly.
 func TestErrors_UnknownToolReturnsRPCError(t *testing.T) {
 	h := Start(t)
