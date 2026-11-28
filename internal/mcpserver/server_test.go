@@ -4,199 +4,319 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/nlink-jp/mcp"
+	"github.com/nlink-jp/mcp/client"
+	"github.com/nlink-jp/mcp/probe"
 
 	"github.com/nlink-jp/ask-gemini-mcp/internal/toolerr"
 	"github.com/nlink-jp/ask-gemini-mcp/internal/transport"
 )
 
-// pipeServer wires a Server up to an in-memory reader/writer pair and
-// returns the server, the buffer that captured stdout, and a registered
-// tool used in the routing tests.
-func pipeServer(t *testing.T, in string, h ToolHandler) (*Server, *bytes.Buffer) {
+const serverName = "ask-gemini-mcp"
+
+// serveOver runs a server prepared by register over pipes and returns the
+// client-side streams (the server's stdout to read, its stdin to write).
+func serveOver(t *testing.T, logger *slog.Logger, register func(*Server)) (io.Reader, io.WriteCloser, func()) {
 	t.Helper()
-	out := &bytes.Buffer{}
-	tr := transport.NewStdioTransport(strings.NewReader(in), out)
-	srv := New("test", "v0", tr, nil)
-	if h != nil {
-		srv.RegisterTool(Tool{
-			Name:        "ask_gemini",
-			Description: "test",
-			InputSchema: json.RawMessage(`{"type":"object"}`),
-		}, h)
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	srv := New(serverName, "test", transport.NewStdioTransport(inR, outW), logger)
+	if register != nil {
+		register(srv)
 	}
-	return srv, out
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Serve(ctx)
+		_ = outW.Close()
+	}()
+	stop := func() {
+		_ = inW.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return after stdin closed")
+		}
+		cancel()
+		_ = outR.Close()
+	}
+	return outR, inW, stop
 }
 
-// runOnce drives Serve until stdin EOF so we can inspect the buffer
-// after a single request line.
-func runOnce(t *testing.T, srv *Server) {
+// open serves a server prepared by register and opens it with nlink-jp/mcp's
+// client, the way a dual-era MCP client does (server-migration §6). Nothing
+// here writes the handshake by hand.
+func open(t *testing.T, register func(*Server)) *client.Client {
 	t.Helper()
-	if err := srv.Serve(context.Background()); err != nil && err != io.EOF {
-		t.Fatalf("Serve: %v", err)
-	}
+	return openWith(t, nil, register, client.Options{})
 }
 
-// readResponses splits the captured stdout into one map per line.
-func readResponses(t *testing.T, buf *bytes.Buffer) []map[string]any {
+// openWith is open with a logger of the server's own and the client's
+// options (CancelNotice, say).
+func openWith(t *testing.T, logger *slog.Logger, register func(*Server), opts client.Options) *client.Client {
 	t.Helper()
-	var out []map[string]any
-	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
-		if line == "" {
-			continue
+	out, in, stop := serveOver(t, logger, register)
+	conn, err := client.NewLineConn(out, in, func() { _ = in.Close() }, client.LineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	opts.Client = mcp.Implementation{Name: "test", Version: "0"}
+	cl, err := client.Open(ctx, conn, opts)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = cl.Close(); stop() })
+	return cl
+}
+
+func callTool(t *testing.T, cl *client.Client, tool string, args any, meta map[string]any) (*client.ToolResult, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return cl.CallTool(ctx, tool, args, meta)
+}
+
+func blocks(t *testing.T, res *client.ToolResult) []ContentBlock {
+	t.Helper()
+	var out []ContentBlock
+	for _, raw := range res.Content {
+		var b ContentBlock
+		if err := json.Unmarshal(raw, &b); err != nil {
+			t.Fatalf("content block: %v", err)
 		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatalf("response not JSON: %v (line=%q)", err, line)
-		}
-		out = append(out, m)
+		out = append(out, b)
 	}
 	return out
 }
 
-func TestHandleInitialize(t *testing.T) {
-	req := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"
-	srv, buf := pipeServer(t, req, nil)
-	runOnce(t, srv)
+var objSchema = json.RawMessage(`{"type":"object","properties":{"msg":{"type":"string"}}}`)
 
-	resps := readResponses(t, buf)
-	if len(resps) != 1 {
-		t.Fatalf("got %d responses, want 1", len(resps))
+func echo(ctx context.Context, args json.RawMessage) (string, error) {
+	var in struct {
+		Msg string `json:"msg"`
 	}
-	result, ok := resps[0]["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing result: %v", resps[0])
-	}
-	if result["protocolVersion"] != ProtocolVersion {
-		t.Errorf("protocolVersion = %v, want %s", result["protocolVersion"], ProtocolVersion)
-	}
-	info, _ := result["serverInfo"].(map[string]any)
-	if info["name"] != "test" || info["version"] != "v0" {
-		t.Errorf("serverInfo = %v", info)
-	}
+	_ = json.Unmarshal(args, &in)
+	return in.Msg, nil
 }
 
-func TestHandleToolsList_ReturnsRegisteredTool(t *testing.T) {
-	req := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"
-	srv, buf := pipeServer(t, req, func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "ok", nil
+// The registration API end to end: the listing, the text as one text block, an error as an
+// isError result.
+func TestToolsOverTheProtocol(t *testing.T) {
+	cl := open(t, func(s *Server) {
+		s.RegisterTool(Tool{Name: "echo", Description: "Echo the input msg", InputSchema: objSchema}, echo)
+		s.RegisterTool(Tool{Name: "coded", InputSchema: objSchema},
+			func(ctx context.Context, args json.RawMessage) (string, error) {
+				return "", toolerr.New(toolerr.CodeInvalidArguments, "nope")
+			})
+		s.RegisterTool(Tool{Name: "plain", InputSchema: objSchema},
+			func(ctx context.Context, args json.RawMessage) (string, error) {
+				return "", errors.New("plain failure")
+			})
 	})
-	runOnce(t, srv)
-
-	result, _ := readResponses(t, buf)[0]["result"].(map[string]any)
-	tools, _ := result["tools"].([]any)
-	if len(tools) != 1 {
-		t.Fatalf("tools len = %d, want 1", len(tools))
+	if cl.Server().Name != serverName {
+		t.Errorf("serverInfo.name = %q", cl.Server().Name)
 	}
-	first, _ := tools[0].(map[string]any)
-	if first["name"] != "ask_gemini" {
-		t.Errorf("tool name = %v", first["name"])
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	list, err := cl.ListTools(ctx)
+	if err != nil || len(list.Tools) != 3 || list.Tools[0].Name != "echo" || list.Tools[0].Description != "Echo the input msg" {
+		t.Fatalf("tools/list = %+v, %v", list, err)
+	}
+
+	res, err := callTool(t, cl, "echo", map[string]string{"msg": "hello"}, nil)
+	if err != nil || res.IsError {
+		t.Fatalf("echo: %+v, %v", res, err)
+	}
+	if b := blocks(t, res); len(b) != 1 || b[0].Type != "text" || b[0].Text != "hello" {
+		t.Errorf("echo blocks = %+v", b)
+	}
+
+	res, _ = callTool(t, cl, "coded", nil, nil)
+	if b := blocks(t, res); !res.IsError || len(b) != 1 || !strings.Contains(b[0].Text, `"code":"invalid_arguments"`) {
+		t.Errorf("a toolerr is not a structured isError result: %+v", b)
+	}
+	res, _ = callTool(t, cl, "plain", nil, nil)
+	if b := blocks(t, res); !res.IsError || b[0].Text != "plain failure" {
+		t.Errorf("a plain error is not its text: %+v", b)
 	}
 }
 
-func TestHandleToolsList_EmptyIsArrayNotNull(t *testing.T) {
-	req := `{"jsonrpc":"2.0","id":3,"method":"tools/list"}` + "\n"
-	srv, buf := pipeServer(t, req, nil)
-	runOnce(t, srv)
-
-	// The wire form must contain "tools":[] not "tools":null so LLM
-	// clients that iterate without nil checks do not crash.
-	if !strings.Contains(buf.String(), `"tools":[]`) {
-		t.Fatalf("expected empty array, got: %s", buf.String())
+// An unknown tool never reaches a handler: the protocol layer refuses it with
+// -32602 (server-migration §3).
+func TestUnknownToolIsAProtocolError(t *testing.T) {
+	_, err := callTool(t, open(t, nil), "missing", nil, nil)
+	var e *mcp.Error
+	if !errors.As(err, &e) || e.Code != -32602 {
+		t.Errorf("err = %v, want -32602", err)
 	}
 }
 
-func TestHandleToolsCall_SuccessReturnsTextContent(t *testing.T) {
-	req := `{"jsonrpc":"2.0","id":4,"method":"tools/call",` +
-		`"params":{"name":"ask_gemini","arguments":{"prompt":"hi"}}}` + "\n"
-	srv, buf := pipeServer(t, req, func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "hello back", nil
+// The server sets no instructions, and none are advertised.
+func TestNoInstructions(t *testing.T) {
+	if got := open(t, nil).Instructions(); got != "" {
+		t.Errorf("instructions = %q, want none", got)
+	}
+}
+
+// ADR-030 §7: the server against the three probe clients — legacy only,
+// dual-era, modern only — with the outcomes the specification's
+// compatibility matrix gives for a dual-era server.
+func TestAgainstTheProbeClients(t *testing.T) {
+	for _, kind := range []probe.ClientKind{probe.ClientLegacyOnly, probe.ClientDual, probe.ClientModernOnly} {
+		out, in, stop := serveOver(t, nil, func(s *Server) {
+			s.RegisterTool(Tool{Name: "echo", InputSchema: objSchema}, echo)
+		})
+		r := probe.Run(context.Background(), kind, out, in, probe.ClientOptions{StepTimeout: 2 * time.Second})
+		stop()
+		if want := probe.Expect(kind, probe.ServerDual); r.Outcome != want || len(r.Violations) != 0 || len(r.Warnings) != 0 {
+			t.Errorf("%v probe client: outcome %s (want %s), violations %v, warnings %v, error %s",
+				kind, r.Outcome, want, r.Violations, r.Warnings, r.Error)
+		}
+	}
+}
+
+// notifications/cancelled reaches the handler: its ctx ends (the module
+// cancels the call).
+func TestACancelledCallCancelsTheHandler(t *testing.T) {
+	ended := make(chan error, 1)
+	cl := openWith(t, nil, func(s *Server) {
+		s.RegisterTool(Tool{Name: "wait", InputSchema: objSchema}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+			select {
+			case <-ctx.Done():
+				ended <- ctx.Err()
+			case <-time.After(5 * time.Second):
+				ended <- nil
+			}
+			return "done", nil
+		})
+	}, client.Options{CancelNotice: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := cl.CallTool(ctx, "wait", nil, nil); err == nil {
+		t.Fatal("the cancelled call returned a result")
+	}
+	select {
+	case err := <-ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the handler's ctx ended with %v, want context.Canceled", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("the handler never returned")
+	}
+}
+
+// Calls sent side by side wait behind the running one, as before the module:
+// QueueDepth 256, where the module's default of 16 would refuse the 17th as
+// "server busy".
+func TestCallsSentSideBySideAllWait(t *testing.T) {
+	cl := open(t, func(s *Server) {
+		s.RegisterTool(Tool{Name: "slow", InputSchema: objSchema}, func(context.Context, json.RawMessage) (string, error) {
+			time.Sleep(20 * time.Millisecond)
+			return "ok", nil
+		})
 	})
-	runOnce(t, srv)
-
-	result, _ := readResponses(t, buf)[0]["result"].(map[string]any)
-	content, _ := result["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("content len = %d", len(content))
+	const n = 24
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := cl.CallTool(ctx, "slow", nil, nil)
+			errs <- err
+		}()
 	}
-	first := content[0].(map[string]any)
-	if first["type"] != "text" || first["text"] != "hello back" {
-		t.Errorf("content[0] = %v", first)
-	}
-	if isErr, _ := result["isError"].(bool); isErr {
-		t.Errorf("isError = true on success path")
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("call refused: %v", err)
+		}
 	}
 }
 
-func TestHandleToolsCall_StructuredErrorSerializesCodeJSON(t *testing.T) {
-	req := `{"jsonrpc":"2.0","id":5,"method":"tools/call",` +
-		`"params":{"name":"ask_gemini","arguments":{}}}` + "\n"
-	srv, buf := pipeServer(t, req, func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "", toolerr.New(toolerr.CodeInvalidArguments, "prompt must not be empty")
+// A handler that panics is answered -32603 by the protocol layer, and the
+// server goes on answering (server-migration §3).
+func TestAPanicIsAnsweredAndServingGoesOn(t *testing.T) {
+	cl := open(t, func(s *Server) {
+		s.RegisterTool(Tool{Name: "boom", InputSchema: objSchema}, func(context.Context, json.RawMessage) (string, error) {
+			panic("boom")
+		})
+		s.RegisterTool(Tool{Name: "echo", InputSchema: objSchema}, echo)
 	})
-	runOnce(t, srv)
-
-	result, _ := readResponses(t, buf)[0]["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); !isErr {
-		t.Fatalf("isError = false, want true")
+	_, err := callTool(t, cl, "boom", nil, nil)
+	var e *mcp.Error
+	if !errors.As(err, &e) || e.Code != -32603 {
+		t.Errorf("panic answered %v, want -32603", err)
 	}
-	content, _ := result["content"].([]any)
-	first := content[0].(map[string]any)
-	text, _ := first["text"].(string)
-
-	var payload toolerr.Error
-	if err := json.Unmarshal([]byte(text), &payload); err != nil {
-		t.Fatalf("error text not JSON: %v (text=%q)", err, text)
-	}
-	if payload.Code != toolerr.CodeInvalidArguments {
-		t.Errorf("code = %q, want %q", payload.Code, toolerr.CodeInvalidArguments)
+	if res, err := callTool(t, cl, "echo", map[string]string{"msg": "after"}, nil); err != nil || res.IsError {
+		t.Errorf("the call after the panic: %+v, %v", res, err)
 	}
 }
 
-func TestHandleToolsCall_UnknownToolReturnsMethodNotFound(t *testing.T) {
-	req := `{"jsonrpc":"2.0","id":6,"method":"tools/call",` +
-		`"params":{"name":"no_such_tool","arguments":{}}}` + "\n"
-	srv, buf := pipeServer(t, req, func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "unreachable", nil
-	})
-	runOnce(t, srv)
+type brokenStdin struct{}
 
-	resps := readResponses(t, buf)
-	errObj, ok := resps[0]["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error envelope, got: %v", resps[0])
+func (brokenStdin) Read([]byte) (int, error) { return 0, errors.New("broken stdin") }
+
+// Without a logger of its own, the server writes the protocol layer's
+// warnings to stderr (it used to discard them).
+func TestTheDefaultLoggerWritesWarningsToStderr(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if code, _ := errObj["code"].(float64); int(code) != -32601 {
-		t.Errorf("code = %v, want -32601 (method not found)", errObj["code"])
-	}
-}
-
-func TestHandleNotification_NoResponseEmitted(t *testing.T) {
-	// notifications/initialized is sent after the initialize handshake
-	// per MCP spec; it has no id, so the server must reply with
-	// nothing at all (not an error, not a result).
-	req := `{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n"
-	srv, buf := pipeServer(t, req, nil)
-	runOnce(t, srv)
-
-	if buf.Len() != 0 {
-		t.Errorf("notification produced output: %q", buf.String())
+	orig := os.Stderr
+	os.Stderr = w
+	srv := New(serverName, "test", transport.NewStdioTransport(brokenStdin{}, io.Discard), nil)
+	os.Stderr = orig
+	_ = srv.Serve(context.Background())
+	_ = w.Close()
+	got, _ := io.ReadAll(r)
+	if !strings.Contains(string(got), "reading stdin failed") {
+		t.Fatalf("stderr = %q, want the protocol layer's warning", got)
 	}
 }
 
-func TestHandleParseError_NoIDStillEmitsError(t *testing.T) {
-	req := "not-json\n"
-	srv, buf := pipeServer(t, req, nil)
-	runOnce(t, srv)
-
-	resps := readResponses(t, buf)
-	errObj, ok := resps[0]["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected error response, got: %v", resps[0])
-	}
-	if code, _ := errObj["code"].(float64); int(code) != -32700 {
-		t.Errorf("code = %v, want -32700 (parse error)", errObj["code"])
+// Every call is logged with its outcome and latency, as before the module.
+func TestEachCallIsLogged(t *testing.T) {
+	var buf syncBuffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cl := openWith(t, logger, func(s *Server) {
+		s.RegisterTool(Tool{Name: "echo", InputSchema: objSchema}, echo)
+		s.RegisterTool(Tool{Name: "plain", InputSchema: objSchema}, func(context.Context, json.RawMessage) (string, error) {
+			return "", errors.New("plain failure")
+		})
+	}, client.Options{})
+	_, _ = callTool(t, cl, "echo", map[string]string{"msg": "hello"}, nil)
+	_, _ = callTool(t, cl, "plain", nil, nil)
+	log := buf.String()
+	for _, want := range []string{"tool call begin", "tool call ok", "bytes=5", "tool call failed", "plain failure", "latency="} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
 	}
 }
+
+// syncBuffer is a bytes.Buffer safe for the server's goroutine and the test.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+func (b *syncBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }

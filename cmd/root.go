@@ -8,7 +8,7 @@ package cmd
 
 import (
 	"context"
-	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -89,14 +89,13 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, cancel := notifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	client, err := vertexai.New(ctx, cfg.GCP.Project, cfg.GCP.Location, cfg.Model.Name, cfg.Model.RequestTimeout)
+	asker, err := newAsker(ctx, cfg, logger)
 	if err != nil {
 		return err
 	}
-	client.SetLogger(logger)
 
 	logger.Info("ask-gemini-mcp ready",
 		"project", cfg.GCP.Project,
@@ -104,17 +103,35 @@ func run(cmd *cobra.Command, args []string) error {
 		"model", cfg.Model.Name,
 		"request_timeout_s", cfg.Model.RequestTimeout)
 
-	tr := transport.NewStdioTransport(os.Stdin, os.Stdout)
+	srv := newServer(transport.NewStdioTransport(serveStdin, serveStdout), logger, asker)
+	// Serve returns nil for EOF and for a signal's cancellation.
+	return srv.Serve(ctx)
+}
+
+// notifyContext is signal.NotifyContext, serveStdin and serveStdout the
+// process's streams, and newAsker the Gemini client's constructor; tests
+// stand in for them, so a test of the wiring needs no Google credentials.
+var (
+	notifyContext           = signal.NotifyContext
+	serveStdin    io.Reader = os.Stdin
+	serveStdout   io.Writer = os.Stdout
+	newAsker                = func(ctx context.Context, cfg *config.Config, logger *slog.Logger) (tools.Asker, error) {
+		client, err := vertexai.New(ctx, cfg.GCP.Project, cfg.GCP.Location, cfg.Model.Name, cfg.Model.RequestTimeout)
+		if err != nil {
+			return nil, err
+		}
+		client.SetLogger(logger)
+		return client, nil
+	}
+)
+
+// newServer builds the MCP server that run serves. It is the only place in
+// this package that constructs one, so a test that drives it sees what the
+// binary answers.
+func newServer(tr *transport.StdioTransport, logger *slog.Logger, asker tools.Asker) *mcpserver.Server {
 	srv := mcpserver.New("ask-gemini-mcp", serverVersion, tr, logger)
-	for _, r := range tools.Registry(client) {
+	for _, r := range tools.Registry(asker) {
 		srv.RegisterTool(r.Tool, r.Handler)
 	}
-
-	if err := srv.Serve(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return srv
 }

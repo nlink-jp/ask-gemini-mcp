@@ -3,6 +3,7 @@ module github.com/nlink-jp/ask-gemini-mcp
 go 1.27.4
 
 require (
+	github.com/nlink-jp/mcp v0.3.0
 	github.com/nlink-jp/nlk v0.5.2
 	github.com/nlink-jp/toml v0.1.1
 	github.com/spf13/cobra v1.10.2

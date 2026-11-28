@@ -1,8 +1,8 @@
 //go:build e2e
 
-// Package e2e drives the ask-gemini-mcp binary via JSON-RPC over
-// stdio, simulating a real MCP client. These tests are excluded from
-// `go test ./...`; run them with:
+// Package e2e drives the ask-gemini-mcp binary over stdio with
+// nlink-jp/mcp's client, as a real MCP client does. These tests are
+// excluded from `go test ./...`; run them with:
 //
 //	make test-e2e
 //
@@ -13,25 +13,26 @@
 package e2e
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nlink-jp/mcp"
+	"github.com/nlink-jp/mcp/client"
 )
 
 // Harness drives a spawned ask-gemini-mcp process over stdio.
 type Harness struct {
-	t      *testing.T
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	lines  chan []byte
-	nextID atomic.Int64
+	t     *testing.T
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	cl    *client.Client
 }
 
 // Start spawns the binary with the given flags, hooks up stdio, and
@@ -80,19 +81,23 @@ func StartWithEnv(t *testing.T, extraEnv map[string]string, args ...string) *Har
 		t.Fatalf("start binary: %v", err)
 	}
 
-	lines := make(chan []byte, 16)
-	go func() {
-		defer close(lines)
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-		for scanner.Scan() {
-			b := make([]byte, len(scanner.Bytes()))
-			copy(b, scanner.Bytes())
-			lines <- b
-		}
-	}()
+	// The binary is opened the way a dual-era MCP client opens it, with
+	// nlink-jp/mcp's client (organization ADR-030 §6): nothing here
+	// writes the handshake by hand.
+	conn, err := client.NewLineConn(stdout, stdin, func() { _ = cmd.Process.Kill() }, client.LineOptions{})
+	if err != nil {
+		t.Fatalf("line conn: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cl, err := client.Open(ctx, conn, client.Options{Client: mcp.Implementation{Name: "e2e", Version: "0"}})
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("open: %v", err)
+	}
 
-	h := &Harness{t: t, cmd: cmd, stdin: stdin, lines: lines}
+	h := &Harness{t: t, cmd: cmd, stdin: stdin, cl: cl}
 	t.Cleanup(h.Close)
 	return h
 }
@@ -113,80 +118,32 @@ func hasProjectConfigured() bool {
 
 // Close gracefully shuts the server down by closing stdin and waiting.
 func (h *Harness) Close() {
+	_ = h.cl.Close()
 	_ = h.stdin.Close()
 	_ = h.cmd.Wait()
 }
 
-// Call sends a JSON-RPC request and waits up to timeout for the
-// matching response.
-func (h *Harness) Call(method string, params any, timeout time.Duration) (json.RawMessage, error) {
-	id := h.nextID.Add(1)
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-	}
-	if params != nil {
-		req["params"] = params
-	}
-	if err := json.NewEncoder(h.stdin).Encode(req); err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
+// Client is the opened MCP client, for what CallTool does not cover.
+func (h *Harness) Client() *client.Client { return h.cl }
 
-	deadline := time.After(timeout)
-	for {
-		select {
-		case line, ok := <-h.lines:
-			if !ok {
-				return nil, fmt.Errorf("server stdout closed before response (method=%s id=%d)", method, id)
-			}
-			var resp struct {
-				ID     json.Number     `json:"id"`
-				Result json.RawMessage `json:"result"`
-				Error  *struct {
-					Code    int    `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(line, &resp); err != nil {
-				return nil, fmt.Errorf("parse response: %w (line=%q)", err, string(line))
-			}
-			respID, err := resp.ID.Int64()
-			if err != nil || respID != id {
-				continue
-			}
-			if resp.Error != nil {
-				return nil, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
-			}
-			return resp.Result, nil
-		case <-deadline:
-			return nil, fmt.Errorf("timeout after %v waiting for response (method=%s id=%d)", timeout, method, id)
-		}
-	}
-}
-
-// CallTool is a convenience helper for tools/call: it returns the
-// inner text from the first content block and the isError flag.
+// CallTool calls one tool: it returns the inner text from the first
+// content block and the isError flag. A protocol error is err.
 func (h *Harness) CallTool(name string, arguments any, timeout time.Duration) (string, bool, error) {
-	res, err := h.Call("tools/call", map[string]any{
-		"name":      name,
-		"arguments": arguments,
-	}, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	res, err := h.cl.CallTool(ctx, name, arguments, nil)
 	if err != nil {
 		return "", false, err
 	}
-	var wrap struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
+	var block struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(res, &wrap); err != nil {
-		return "", false, fmt.Errorf("parse tools/call result: %w", err)
+	if len(res.Content) == 0 {
+		return "", res.IsError, fmt.Errorf("tools/call returned no content")
 	}
-	if len(wrap.Content) == 0 {
-		return "", wrap.IsError, fmt.Errorf("tools/call returned no content")
+	if err := json.Unmarshal(res.Content[0], &block); err != nil {
+		return "", res.IsError, fmt.Errorf("parse content block: %w", err)
 	}
-	return wrap.Content[0].Text, wrap.IsError, nil
+	return block.Text, res.IsError, nil
 }
