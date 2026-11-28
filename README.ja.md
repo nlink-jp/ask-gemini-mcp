@@ -15,6 +15,13 @@
 います。現行バージョンは [CHANGELOG.md](CHANGELOG.md)、設計 RFP は
 [`docs/ja/ask-gemini-mcp-rfp.ja.md`](docs/ja/ask-gemini-mcp-rfp.ja.md) を参照。
 
+MCP の新旧両方の時代を話します。2026-07-28 版（`server/discover` で探る
+クライアント）と、それより前の `initialize` の握手（2025-11-25・2025-06-18・
+2024-11-05）を、組織の共通モジュール [nlink-jp/mcp](https://github.com/nlink-jp/mcp)
+で話します。クライアントが呼び出しを取り消すと、送っている途中の Gemini への
+要求を止めます。パイプで流し込んだ要求には、入力の終わりで終了する前にすべて
+答えます。（[ADR-0001](docs/ja/adr/0001-mcp-through-nlink-jp-mcp.ja.md)）
+
 ## クイックスタート
 
 ```sh

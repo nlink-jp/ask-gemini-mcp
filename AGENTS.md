@@ -33,16 +33,15 @@ ask-gemini-mcp/
 ├── cmd/root.go              Cobra root, --config / --version
 ├── internal/
 │   ├── config/              TOML + env loader
-│   ├── jsonrpc/             Request / Response / Error
-│   ├── transport/           stdio line-delimited JSON
-│   ├── mcpserver/           initialize / tools/list / tools/call
+│   ├── transport/           holds stdin/stdout (framing is nlink-jp/mcp's)
+│   ├── mcpserver/           thin layer over nlink-jp/mcp's server.ToolServer (ADR-0001)
 │   ├── toolerr/             {Code, Message, Details}
 │   ├── vertexai/            google.golang.org/genai wrapper + backoff
 │   └── tools/               ask_gemini.go (MCP tool handler)
 ├── e2e/                     //go:build e2e: harness + lifecycle / error tests
 ├── docs/
-│   ├── en/                  README, RFP (no language suffix)
-│   └── ja/                  README, RFP (.ja.md suffix)
+│   ├── en/                  RFP, adr/ (no language suffix)
+│   └── ja/                  RFP, adr/ (.ja.md suffix)
 ├── config.example.toml
 ├── Makefile / .gitignore / go.mod / go.sum
 ├── README.md / README.ja.md
@@ -56,9 +55,17 @@ ask-gemini-mcp/
   logging goes to stderr via `log/slog`. `fmt.Println` is banned.
 - **Stateless**: each `ask_gemini` call is independent. No session state
   is kept server-side; the MCP client maintains conversation history.
-- **MCP has no protocol-level cancel**: closing stdin is the only way to
-  signal cancellation. The server detects this via EOF and cancels the
-  parent context, aborting in-flight Gemini calls.
+- **Cancellation is `notifications/cancelled`** (ADR-0001): the module
+  cancels the call's ctx, the Gemini request in flight stops, no retry
+  follows, and the call gets no answer. Closing stdin is not a
+  cancellation: at EOF every call that arrived is answered first.
+- **The MCP protocol is nlink-jp/mcp's** (ADR-0001, organization ADR-030
+  §6). Nothing outside the module handles `initialize` or
+  `server/discover`; the e2e harness opens the binary with the module's
+  `client`. An unknown tool is -32602 — the module's rule.
+- **Each call is logged** (`tool call begin` / `ok` / `failed` with
+  latency) by `internal/mcpserver`'s `call`; keep it there when the layer
+  changes.
 - **Retryable errors only**: `isRetryable()` matches well-known transient
   failure substrings (429 / 5xx / connection / timeout). Auth and schema
   errors return immediately so the user sees the real cause.
@@ -76,5 +83,5 @@ ask-gemini-mcp/
   serve.
 - **No `make check` / `make lint` target** — only `make test`. Nothing in this
   repo gates formatting, so `gofmt` drift accumulates unnoticed (one such
-  file was found in `internal/transport` on 2026-09-21 and left alone as
-  unrelated). Run `go vet ./...` and `gofmt -l .` by hand before a release.
+  file was found in `internal/transport` on 2026-09-21; the migration to
+  nlink-jp/mcp rewrote it). Run `go vet ./...` and `gofmt -l .` by hand before a release.

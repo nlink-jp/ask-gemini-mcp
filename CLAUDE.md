@@ -53,6 +53,7 @@ Settings load order: built-in defaults → TOML file → env vars.
 
 ## Key dependencies
 
+- `github.com/nlink-jp/mcp` — the MCP protocol, both eras (organization ADR-030; ADR-0001)
 - `google.golang.org/genai` — Vertex AI Gemini SDK
 - `github.com/nlink-jp/nlk/backoff` — Vertex AI retry backoff
 - `github.com/spf13/cobra` — CLI framework
@@ -62,9 +63,8 @@ Settings load order: built-in defaults → TOML file → env vars.
 
 - `cmd/` — Cobra root command (flat, no subcommand), wires stdio server
 - `internal/config/` — TOML + env-var configuration
-- `internal/jsonrpc/` — JSON-RPC 2.0 message types
-- `internal/transport/` — line-delimited JSON stdio transport
-- `internal/mcpserver/` — MCP protocol: initialize / tools/list / tools/call
+- `internal/transport/` — holds stdin/stdout; framing is nlink-jp/mcp's
+- `internal/mcpserver/` — thin layer over nlink-jp/mcp's `server.ToolServer` (both MCP eras; ADR-0001)
 - `internal/toolerr/` — structured `{code, message, details}` errors
 - `internal/vertexai/` — thin Gemini client (genai SDK + retry)
 - `internal/tools/` — MCP tool handlers (`ask_gemini.go`)
@@ -77,9 +77,10 @@ Settings load order: built-in defaults → TOML file → env vars.
   `fmt.Println` is banned.
 - **No retry for non-transient errors**: `isRetryable()` matches well-known
   transient failure substrings only. Auth / schema errors return immediately.
-- **Context cancel**: when the client closes stdin, the parent context is
-  cancelled and in-flight Gemini calls abort (MCP 2024-11-05 has no
-  protocol-level cancel notification — closing stdin is the only signal).
+- **Cancellation**: `notifications/cancelled` cancels the call and the
+  Gemini request in flight (ADR-0001); SIGINT/SIGTERM cancel every call.
+  Closing stdin is not a cancellation: the calls that arrived are answered
+  first.
 
 ## Design references
 

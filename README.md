@@ -18,6 +18,14 @@ See [CHANGELOG.md](CHANGELOG.md) for the current version and
 [`docs/en/ask-gemini-mcp-rfp.md`](docs/en/ask-gemini-mcp-rfp.md) for the
 design RFP.
 
+The server speaks both eras of the MCP protocol: the 2026-07-28 revision
+(clients that probe with `server/discover`) and the earlier `initialize`
+handshake (2025-11-25, 2025-06-18, 2024-11-05), through the organization's
+module [nlink-jp/mcp](https://github.com/nlink-jp/mcp). A client that cancels a
+call stops the Gemini request in flight. Requests piped in are all answered
+before the server exits at end of input.
+([ADR-0001](docs/en/adr/0001-mcp-through-nlink-jp-mcp.md))
+
 ## Quick start
 
 ```sh

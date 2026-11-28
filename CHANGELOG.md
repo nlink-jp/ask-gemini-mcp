@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The MCP server speaks both eras of the protocol** (ADR-0001): the
+  2026-07-28 revision, whose clients probe with `server/discover`, as well as
+  the earlier `initialize` handshake (2025-11-25, 2025-06-18, 2024-11-05; it was
+  fixed at 2024-11-05). The protocol layer is now the organization's shared
+  module nlink-jp/mcp (organization ADR-030); the tool, its results and the
+  per-call log lines are unchanged.
+
+### Changed
+
+- Protocol details now follow the module:
+  - an unknown tool is -32602 (it was -32601); `ping` is answered `{}` (it was
+    -32601);
+  - `tools/list`, `tools/call` and unknown methods before `initialize` are
+    refused with -32602;
+  - `arguments` that is not an object is refused with -32602;
+  - a request with `"id":null` gets -32600 (it was silent, as a notification);
+  - a line may be up to 16 MiB (it was 1 MiB); a longer one gets -32600 and
+    reading goes on (it stopped the server); a blank line is skipped (it got
+    -32700); a batch gets -32600; a line that is not JSON is answered
+    "parse error";
+  - a failed write to stdout stops the server (it was logged and reading went
+    on);
+  - a panic in the tool is answered -32603 and the server goes on (it ended
+    the process);
+  - up to 256 calls wait behind a running one; more are refused with -32603
+    "server busy";
+  - `notifications/cancelled` now cancels the call: the Gemini request in flight stops, nothing is
+    retried, and the call is not answered;
+  - SIGINT and SIGTERM end the server even while it waits for input: the
+    running call is cancelled and the server exits within the module's
+    shutdown grace (5 s).
+
+  Requests piped in are still all answered before the server exits at end of
+  input.
+
+### Fixed
+
+- A declared argument spelt in another case (`Prompt` for `prompt`) was taken
+  and sent to the model; `ask_gemini` now refuses it by name (organization
+  ADR-021 §4).
+
 ## [0.2.4] - 2026-11-24
 
 ### Changed
