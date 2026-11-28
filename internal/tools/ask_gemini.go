@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/nlink-jp/ask-gemini-mcp/internal/mcpserver"
@@ -87,6 +88,18 @@ func AskGeminiHandler(asker Asker) mcpserver.ToolHandler {
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&args); err != nil {
 			return "", toolerr.New(toolerr.CodeInvalidArguments, "invalid arguments: "+err.Error())
+		}
+		// encoding/json matches names case-insensitively; the schema does
+		// not, so "Prompt" is refused by name rather than read as prompt
+		// (organization ADR-021 §4).
+		var names map[string]json.RawMessage
+		if json.Unmarshal(raw, &names) == nil {
+			declared := argNames(&args)
+			for n := range names {
+				if !declared(n) {
+					return "", toolerr.New(toolerr.CodeInvalidArguments, fmt.Sprintf("invalid arguments: json: unknown field %q", n))
+				}
+			}
 		}
 		if strings.TrimSpace(args.Prompt) == "" {
 			return "", toolerr.New(toolerr.CodeInvalidArguments, "prompt must not be empty")

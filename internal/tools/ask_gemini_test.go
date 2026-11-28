@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/nlink-jp/ask-gemini-mcp/internal/toolerr"
@@ -78,6 +79,21 @@ func TestAskGeminiHandler_RejectsUnknownField(t *testing.T) {
 	}
 	if !errors.Is(err, toolerr.New(toolerr.CodeInvalidArguments, "")) {
 		t.Errorf("want CodeInvalidArguments, got %v", err)
+	}
+}
+
+// A declared name spelt in another case is not the declared one: the schema
+// is case-sensitive, encoding/json is not (organization ADR-021 §4), so
+// "Prompt" never reaches the model.
+func TestAskGeminiHandler_RejectsADeclaredNameInAnotherCase(t *testing.T) {
+	asker := &fakeAsker{}
+	_, err := AskGeminiHandler(asker)(context.Background(), json.RawMessage(`{"Prompt":"x"}`))
+	var te *toolerr.Error
+	if !errors.As(err, &te) || te.Code != toolerr.CodeInvalidArguments || !strings.Contains(te.Message, `"Prompt"`) {
+		t.Fatalf("err = %v, want invalid_arguments naming Prompt", err)
+	}
+	if asker.gotPrompt != "" {
+		t.Errorf("the model was asked %q", asker.gotPrompt)
 	}
 }
 
